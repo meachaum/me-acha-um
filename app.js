@@ -189,50 +189,39 @@ function calcularScore(produto, consulta) {
   const categoria = norm(
     `${produto.category || ''} ${produto.subcategory || ''}`
   );
-  const descricao = norm(
-    produto.description || ''
-  );
-
-  const textoCompleto =
-    `${titulo} ${categoria} ${descricao}`;
+  const descricao = norm(produto.description || '');
 
   let score = 0;
-
   let originaisNoTitulo = 0;
   let originaisEncontrados = 0;
 
   /*
-    PALAVRAS QUE A PESSOA ESCREVEU.
-
-    Elas são o sinal mais importante da busca simples.
+    PALAVRAS DIGITADAS PELO CLIENTE
+    São o sinal principal da busca.
   */
   for (const termo of consulta.termosOriginais) {
     if (titulo.includes(termo)) {
-      score += 35;
+      score += 40;
       originaisNoTitulo++;
       originaisEncontrados++;
     } else if (categoria.includes(termo)) {
       score += 18;
       originaisEncontrados++;
     } else if (descricao.includes(termo)) {
-      score += 6;
+      score += 5;
       originaisEncontrados++;
     }
   }
 
   /*
-    Se nenhuma palavra útil escrita pelo usuário
-    aparece no produto, ele não entra pela busca direta.
+    Se nada do que o cliente escreveu aparece,
+    só permitimos o produto se a interpretação
+    inteligente encontrou correspondência.
   */
   if (
     consulta.termosOriginais.length &&
     originaisEncontrados === 0
   ) {
-    /*
-      Ainda permitimos que a interpretação inteligente
-      encontre algo quando o usuário descreveu uma necessidade
-      sem citar diretamente o produto.
-    */
     let encontrouIA = false;
 
     for (const termo of consulta.termosIA) {
@@ -251,51 +240,104 @@ function calcularScore(produto, consulta) {
   }
 
   /*
-    Quanto maior a cobertura das palavras originais,
-    mais relevante é o produto.
+    Quanto mais palavras da pesquisa aparecem
+    no produto, maior a relevância.
   */
   if (consulta.termosOriginais.length) {
     const cobertura =
       originaisEncontrados /
       consulta.termosOriginais.length;
 
-    score += cobertura * 80;
+    score += cobertura * 100;
 
     if (
       originaisNoTitulo ===
       consulta.termosOriginais.length
     ) {
-      score += 100;
+      score += 120;
     }
   }
 
   /*
-    FRASES INTERPRETADAS.
+    IDENTIFICA ACESSÓRIOS E PEÇAS DE FORMA GERAL.
 
-    Servem como bônus, principalmente para buscas
-    mais humanas, mas não dominam a busca simples.
+    Não depende do produto pesquisado.
+    Serve para ventilador, celular, cafeteira,
+    aspirador, computador, ferramentas etc.
+  */
+  const palavrasAcessorio = [
+    'suporte',
+    'capa',
+    'case',
+    'pelicula',
+    'carregador',
+    'cabo',
+    'adaptador',
+    'controle',
+    'peca',
+    'pecas',
+    'reposicao',
+    'kit reparo',
+    'base',
+    'alavanca',
+    'botao',
+    'filtro',
+    'refil',
+    'protetor',
+    'bolsa',
+    'estojo',
+    'gancho',
+    'conector',
+    'extensao'
+  ];
+
+  const pareceAcessorio =
+    palavrasAcessorio.some(
+      palavra => titulo.includes(palavra)
+    );
+
+  /*
+    Só penaliza acessórios quando o cliente NÃO
+    pediu explicitamente por aquele acessório.
+
+    Exemplo:
+    "ventilador" -> suporte perde relevância.
+    "suporte para ventilador" -> suporte continua relevante.
+  */
+  if (pareceAcessorio) {
+    const clientePediuAcessorio =
+      palavrasAcessorio.some(
+        palavra =>
+          consulta.termosOriginais.includes(palavra)
+      );
+
+    if (!clientePediuAcessorio) {
+      score -= 180;
+    }
+  }
+
+  /*
+    TERMOS DA INTERPRETAÇÃO INTELIGENTE.
+    São apenas complemento.
   */
   for (const frase of consulta.frasesIA) {
     if (titulo.includes(frase)) {
-      score += 45;
+      score += 35;
     } else if (categoria.includes(frase)) {
-      score += 20;
-    } else if (descricao.includes(frase)) {
-      score += 6;
+      score += 15;
     }
   }
 
   for (const termo of consulta.termosIA) {
     if (titulo.includes(termo)) {
-      score += 8;
+      score += 6;
     } else if (categoria.includes(termo)) {
-      score += 4;
+      score += 3;
     }
   }
 
   /*
-    Avaliação e desconto servem apenas como desempate.
-    Eles nunca devem fazer um produto irrelevante vencer.
+    Avaliação e desconto apenas desempатam.
   */
   score +=
     Math.min(num(produto.rating), 5) * 1.2 +
