@@ -8,6 +8,8 @@ const FUNCTION_URL =
   'https://ysdxoimkoqadxbpnjbde.supabase.co/functions/v1/me-acha-um-ai';
 
 let catalog = [];
+let todosResultados = [];
+let mostrandoTodos = false;
 
 function norm(s = '') {
   return String(s)
@@ -25,30 +27,82 @@ function money(v) {
 }
 
 function num(v) {
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') {
+    return Number.isFinite(v) ? v : 0;
+  }
 
   if (typeof v === 'string') {
-    const limpo = v
-      .replace(/[^\d,.-]/g, '')
-      .replace(',', '.');
+    let s = v.trim();
 
-    const n = Number(limpo);
+    if (s.includes(',') && s.includes('.')) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else if (s.includes(',')) {
+      s = s.replace(',', '.');
+    }
+
+    s = s.replace(/[^\d.-]/g, '');
+
+    const n = Number(s);
     return Number.isFinite(n) ? n : 0;
   }
 
   return 0;
 }
 
-function termosLocais(q) {
-  const stop = new Set(
-    'me acha um uma uns umas de da do das dos para por com sem ate até r reais real e a o que quero preciso gostaria bom boa melhor barato barata algo coisa'.split(' ')
-  );
+function extrairOrcamento(texto) {
+  const t = norm(texto);
 
-  return norm(q)
-    .replace(/r\$?\s*\d+[.,]?\d*/g, ' ')
+  const padroes = [
+    /(?:ate|maximo|max|menos de)\s*(?:r\$)?\s*(\d+(?:[.,]\d{1,2})?)/i,
+    /r\$\s*(\d+(?:[.,]\d{1,2})?)/i
+  ];
+
+  for (const padrao of padroes) {
+    const m = t.match(padrao);
+
+    if (m) {
+      return Number(m[1].replace(',', '.'));
+    }
+  }
+
+  return null;
+}
+
+const STOPWORDS = new Set(
+  [
+    'me', 'acha', 'ache', 'achar',
+    'um', 'uma', 'uns', 'umas',
+    'de', 'da', 'do', 'das', 'dos',
+    'para', 'por', 'com', 'sem',
+    'ate', 'maximo', 'max',
+    'menos', 'que',
+    'r', 'reais', 'real',
+    'e', 'a', 'o', 'as', 'os',
+    'quero', 'queria',
+    'preciso', 'gostaria',
+    'produto', 'produtos',
+    'algo', 'coisa',
+    'bom', 'boa',
+    'melhor',
+    'barato', 'barata'
+  ]
+);
+
+function tokens(texto) {
+  return norm(texto)
+    .replace(/r\$?\s*\d+(?:[.,]\d{1,2})?/g, ' ')
+    .replace(/\b\d+(?:[.,]\d{1,2})?\b/g, ' ')
     .replace(/[^a-z0-9 ]/g, ' ')
     .split(/\s+/)
-    .filter(w => w.length > 2 && !stop.has(w));
+    .filter(
+      t =>
+        t.length >= 3 &&
+        !STOPWORDS.has(t)
+    );
+}
+
+function unicos(lista) {
+  return [...new Set(lista.filter(Boolean))];
 }
 
 async function interpretarBusca(busca) {
@@ -62,369 +116,245 @@ async function interpretarBusca(busca) {
     });
 
     if (!response.ok) {
-      throw new Error('Falha na interpretação');
+      throw new Error('Falha no interpretador');
     }
 
     return await response.json();
 
   } catch (error) {
-    return {
-      ok: false,
-      busca_original: busca,
-      termos_busca: [busca],
-      termos_obrigatorios: [],
-      termos_evitar: [],
-      orcamento_maximo: null
-    };
+    return null;
   }
 }
 
-function analisarTermos(dados, buscaOriginal) {
-  const frases =
-    dados && Array.isArray(dados.termos_busca)
-      ? [...new Set(
-          dados.termos_busca
-            .map(norm)
-            .filter(Boolean)
-        )]
-      : [];
+function montarConsulta(busca, interpretacao) {
+  const termosOriginais = tokens(busca);
 
-  let termos = frases
-    .flatMap(t => termosLocais(t))
-    .filter(Boolean);
-
-  if (!termos.length) {
-    termos = termosLocais(buscaOriginal);
-  }
-
-  let max = null;
+  let termosIA = [];
+  let frasesIA = [];
 
   if (
-    dados &&
-    dados.orcamento_maximo !== null &&
-    dados.orcamento_maximo !== undefined
+    interpretacao &&
+    Array.isArray(interpretacao.termos_busca)
   ) {
-    const valor = num(dados.orcamento_maximo);
+    frasesIA = interpretacao.termos_busca
+      .map(norm)
+      .filter(Boolean);
+
+    termosIA = frasesIA.flatMap(tokens);
+  }
+
+  const maxLocal = extrairOrcamento(busca);
+
+  let maxIA = null;
+
+  if (
+    interpretacao &&
+    interpretacao.orcamento_maximo !== null &&
+    interpretacao.orcamento_maximo !== undefined
+  ) {
+    const valor = num(
+      interpretacao.orcamento_maximo
+    );
 
     if (valor > 0) {
-      max = valor;
+      maxIA = valor;
     }
   }
 
+  /*
+    Os termos escritos pelo usuário têm prioridade.
+
+    Os termos interpretados pelo Supabase entram como
+    complemento, nunca como substitutos obrigatórios.
+  */
   return {
-    buscaOriginal: norm(buscaOriginal),
-
-    frases,
-
-    termos: [...new Set(termos)],
-
-    obrigatorios:
-      dados && Array.isArray(dados.termos_obrigatorios)
-        ? [...new Set(
-            dados.termos_obrigatorios
-              .map(norm)
-              .filter(Boolean)
-          )]
-        : [],
-
-    evitar:
-      dados && Array.isArray(dados.termos_evitar)
-        ? [...new Set(
-            dados.termos_evitar
-              .map(norm)
-              .filter(Boolean)
-          )]
-        : [],
-
-    max
+    termosOriginais: unicos(termosOriginais),
+    termosIA: unicos(termosIA),
+    frasesIA: unicos(frasesIA),
+    max: maxLocal !== null ? maxLocal : maxIA
   };
 }
 
-function score(p, analise) {
-  const price = num(p.price);
+function calcularScore(produto, consulta) {
+  const preco = num(produto.price);
 
-  // ORÇAMENTO É REGRA ABSOLUTA
   if (
-    analise.max !== null &&
-    price > analise.max
+    consulta.max !== null &&
+    preco > consulta.max
   ) {
     return null;
   }
 
-  const title = norm(p.title || '');
-
-  const category = norm(
-    `${p.category || ''} ${p.subcategory || ''}`
+  const titulo = norm(produto.title || '');
+  const categoria = norm(
+    `${produto.category || ''} ${produto.subcategory || ''}`
+  );
+  const descricao = norm(
+    produto.description || ''
   );
 
-  const description = norm(
-    p.description || ''
-  );
+  const textoCompleto =
+    `${titulo} ${categoria} ${descricao}`;
 
-  const full =
-    `${title} ${category} ${description}`;
+  let score = 0;
 
-  // TERMOS PROIBIDOS
+  let originaisNoTitulo = 0;
+  let originaisEncontrados = 0;
+
+  /*
+    PALAVRAS QUE A PESSOA ESCREVEU.
+
+    Elas são o sinal mais importante da busca simples.
+  */
+  for (const termo of consulta.termosOriginais) {
+    if (titulo.includes(termo)) {
+      score += 35;
+      originaisNoTitulo++;
+      originaisEncontrados++;
+    } else if (categoria.includes(termo)) {
+      score += 18;
+      originaisEncontrados++;
+    } else if (descricao.includes(termo)) {
+      score += 6;
+      originaisEncontrados++;
+    }
+  }
+
+  /*
+    Se nenhuma palavra útil escrita pelo usuário
+    aparece no produto, ele não entra pela busca direta.
+  */
   if (
-    analise.evitar.some(
-      termo =>
-        termo &&
-        (
-          title.includes(termo) ||
-          category.includes(termo)
-        )
-    )
+    consulta.termosOriginais.length &&
+    originaisEncontrados === 0
   ) {
-    return null;
-  }
+    /*
+      Ainda permitimos que a interpretação inteligente
+      encontre algo quando o usuário descreveu uma necessidade
+      sem citar diretamente o produto.
+    */
+    let encontrouIA = false;
 
-  let pontos = 0;
-  let encontrados = 0;
+    for (const termo of consulta.termosIA) {
+      if (
+        titulo.includes(termo) ||
+        categoria.includes(termo)
+      ) {
+        encontrouIA = true;
+        break;
+      }
+    }
 
-  // FRASES ESPECÍFICAS VINDAS DO INTERPRETADOR
-  for (const frase of analise.frases) {
-    if (!frase) continue;
-
-    if (title.includes(frase)) {
-      pontos += 70;
-    } else if (category.includes(frase)) {
-      pontos += 35;
-    } else if (description.includes(frase)) {
-      pontos += 15;
+    if (!encontrouIA) {
+      return null;
     }
   }
 
-  // PALAVRAS INDIVIDUAIS
-  for (const termo of analise.termos) {
-    if (!termo) continue;
+  /*
+    Quanto maior a cobertura das palavras originais,
+    mais relevante é o produto.
+  */
+  if (consulta.termosOriginais.length) {
+    const cobertura =
+      originaisEncontrados /
+      consulta.termosOriginais.length;
 
-    if (title.includes(termo)) {
-      pontos += 14;
-      encontrados++;
-    } else if (category.includes(termo)) {
-      pontos += 7;
-      encontrados++;
-    } else if (description.includes(termo)) {
-      pontos += 3;
-      encontrados++;
-    }
-  }
-
-  if (!encontrados) {
-    return null;
-  }
-
-  // CONCEITOS DE FINALIDADE
-  let conceitosEncontrados = 0;
-
-  for (const termo of analise.obrigatorios) {
-    if (!termo) continue;
-
-    if (title.includes(termo)) {
-      pontos += 28;
-      conceitosEncontrados++;
-    } else if (full.includes(termo)) {
-      pontos += 10;
-      conceitosEncontrados++;
-    }
-  }
-
-  if (
-    analise.obrigatorios.length &&
-    conceitosEncontrados === 0
-  ) {
-    return null;
-  }
-
-  // COMBINAÇÕES IMPORTANTES
-  const combinacoes = [
-    ['tira', 'pelo'],
-    ['removedor', 'pelo'],
-    ['removedor', 'fiapo'],
-    ['rolo', 'pelo'],
-    ['rolinho', 'pelo'],
-    ['sofa', 'pelo'],
-    ['roupa', 'pelo'],
-    ['tecido', 'pelo'],
-    ['estofado', 'pelo'],
-
-    ['caixa', 'organiz'],
-    ['organiz', 'brinquedo'],
-
-    ['espremedor', 'laranja'],
-    ['espremedor', 'fruta'],
-    ['espremedor', 'eletrico'],
-
-    ['fone', 'bluetooth']
-  ];
-
-  for (const [a, b] of combinacoes) {
-    if (
-      full.includes(a) &&
-      full.includes(b)
-    ) {
-      pontos += 40;
-    }
-  }
-
-  // FINALIDADE: PREPARAR SUCO
-  const querFazerSuco =
-    analise.buscaOriginal.includes('fazer suco') ||
-    analise.frases.some(f =>
-      f.includes('espremedor')
-    );
-
-  if (querFazerSuco) {
-    if (title.includes('espremedor')) {
-      pontos += 100;
-    }
+    score += cobertura * 80;
 
     if (
-      title.includes('laranja') ||
-      title.includes('frutas')
+      originaisNoTitulo ===
+      consulta.termosOriginais.length
     ) {
-      pontos += 25;
-    }
-
-    // Produto que apenas armazena/serve suco
-    // não deve vencer equipamento que prepara o suco.
-    const acessoriosSuco = [
-      'garrafa',
-      'garrafinha',
-      'copo',
-      'jarra',
-      'canudo',
-      'tampa'
-    ];
-
-    if (
-      acessoriosSuco.some(t =>
-        title.includes(t)
-      ) &&
-      !title.includes('espremedor')
-    ) {
-      pontos -= 90;
+      score += 100;
     }
   }
 
-  // CONTEXTO DE REMOÇÃO DE PELOS
-  const buscaDeRemocao =
-    analise.buscaOriginal.includes('pelo') &&
-    (
-      analise.buscaOriginal.includes('sofa') ||
-      analise.buscaOriginal.includes('roupa') ||
-      analise.buscaOriginal.includes('estofado')
-    );
+  /*
+    FRASES INTERPRETADAS.
 
-  if (buscaDeRemocao) {
-    const superficie = [
-      'sofa',
-      'estofado',
-      'roupa',
-      'roupas',
-      'tecido',
-      'tapete',
-      'moveis'
-    ];
-
-    if (
-      superficie.some(t =>
-        full.includes(t)
-      )
-    ) {
-      pontos += 35;
+    Servem como bônus, principalmente para buscas
+    mais humanas, mas não dominam a busca simples.
+  */
+  for (const frase of consulta.frasesIA) {
+    if (titulo.includes(frase)) {
+      score += 45;
+    } else if (categoria.includes(frase)) {
+      score += 20;
+    } else if (descricao.includes(frase)) {
+      score += 6;
     }
   }
 
-  // ORGANIZAÇÃO DE BRINQUEDOS
-  const querOrganizarBrinquedos =
-    analise.buscaOriginal.includes('brinquedo') &&
-    (
-      analise.buscaOriginal.includes('organiz') ||
-      analise.buscaOriginal.includes('guardar')
-    );
-
-  if (querOrganizarBrinquedos) {
-    if (
-      title.includes('brinquedo') ||
-      description.includes('brinquedo')
-    ) {
-      pontos += 55;
-    }
-
-    if (
-      title.includes('caixa') ||
-      title.includes('cesto') ||
-      title.includes('organizador')
-    ) {
-      pontos += 30;
+  for (const termo of consulta.termosIA) {
+    if (titulo.includes(termo)) {
+      score += 8;
+    } else if (categoria.includes(termo)) {
+      score += 4;
     }
   }
 
-  // COBERTURA
-  const cobertura =
-    encontrados /
-    Math.max(analise.termos.length, 1);
+  /*
+    Avaliação e desconto servem apenas como desempate.
+    Eles nunca devem fazer um produto irrelevante vencer.
+  */
+  score +=
+    Math.min(num(produto.rating), 5) * 1.2 +
+    Math.min(num(produto.discount), 80) / 40;
 
-  pontos += cobertura * 20;
-
-  // QUALIDADE COMERCIAL É DESEMPATE,
-  // NÃO O PRINCIPAL CRITÉRIO.
-  pontos +=
-    Math.min(num(p.rating), 5) * 1.2 +
-    Math.min(num(p.discount), 80) / 50;
-
-  return pontos;
+  return score;
 }
 
-function render(p, label) {
+function renderProduto(produto, label = '') {
   return `
     <article class="product">
 
-      <div class="tag">
-        ${label}
-      </div>
+      ${
+        label
+          ? `<div class="tag">${label}</div>`
+          : ''
+      }
 
       <img
-        src="${p.image}"
+        src="${produto.image}"
         alt=""
         loading="lazy"
       >
 
       <div class="pc">
 
-        <h4>
-          ${p.title}
-        </h4>
+        <h4>${produto.title}</h4>
 
         <div class="meta">
           ⭐ ${
-            num(p.rating)
-              ? num(p.rating).toFixed(1)
+            num(produto.rating)
+              ? num(produto.rating).toFixed(1)
               : '—'
           }
           ·
           ${
-            num(p.discount)
-              ? `${Math.round(num(p.discount))}% OFF`
+            num(produto.discount)
+              ? `${Math.round(num(produto.discount))}% OFF`
               : 'Oferta do catálogo'
           }
         </div>
 
         <div class="price">
-          ${money(num(p.price))}
+          ${money(num(produto.price))}
         </div>
 
         ${
-          num(p.regular) > num(p.price)
-            ? `<div class="old">
-                 de ${money(num(p.regular))}
-               </div>`
+          num(produto.regular) >
+          num(produto.price)
+            ? `
+              <div class="old">
+                de ${money(num(produto.regular))}
+              </div>
+            `
             : ''
         }
 
         <a
-          href="${p.link}"
+          href="${produto.link}"
           target="_blank"
           rel="noopener"
         >
@@ -436,11 +366,106 @@ function render(p, label) {
   `;
 }
 
+function renderPrincipais(resultados) {
+  const principais =
+    resultados.slice(0, 3);
+
+  const labels = [
+    'Melhor correspondência',
+    '2ª melhor opção',
+    '3ª melhor opção'
+  ];
+
+  cards.innerHTML =
+    principais
+      .map(
+        (item, i) =>
+          renderProduto(
+            item.p,
+            labels[i]
+          )
+      )
+      .join('');
+
+  if (resultados.length > 3) {
+    cards.insertAdjacentHTML(
+      'afterend',
+      `
+        <div id="moreArea" style="
+          text-align:center;
+          margin:24px 0;
+        ">
+          <button
+            id="showAll"
+            type="button"
+            style="
+              border:0;
+              border-radius:12px;
+              padding:14px 24px;
+              font-weight:800;
+              cursor:pointer;
+            "
+          >
+            Ver todas as opções (${resultados.length})
+          </button>
+        </div>
+      `
+    );
+
+    document
+      .querySelector('#showAll')
+      .addEventListener(
+        'click',
+        mostrarTodos
+      );
+  }
+}
+
+function mostrarTodos() {
+  mostrandoTodos = true;
+
+  const area =
+    document.querySelector('#moreArea');
+
+  if (area) {
+    area.remove();
+  }
+
+  cards.innerHTML =
+    todosResultados
+      .map((item, i) =>
+        renderProduto(
+          item.p,
+          i < 3
+            ? [
+                'Melhor correspondência',
+                '2ª melhor opção',
+                '3ª melhor opção'
+              ][i]
+            : ''
+        )
+      )
+      .join('');
+
+  statusEl.textContent =
+    `Mostrando ${todosResultados.length} opções encontradas.`;
+}
+
 async function search(q) {
   if (!q) return;
 
   results.hidden = false;
   cards.innerHTML = '';
+
+  const areaAntiga =
+    document.querySelector('#moreArea');
+
+  if (areaAntiga) {
+    areaAntiga.remove();
+  }
+
+  todosResultados = [];
+  mostrandoTodos = false;
 
   if (!catalog.length) {
     statusEl.textContent =
@@ -449,153 +474,133 @@ async function search(q) {
   }
 
   statusEl.textContent =
-    '🔎 Entendendo o que você procura...';
+    '🔎 Procurando no catálogo...';
 
+  /*
+    A interpretação inteligente acontece em paralelo
+    à busca. Se falhar, a busca simples continua funcionando.
+  */
   const interpretacao =
     await interpretarBusca(q);
 
-  statusEl.textContent =
-    '⚡ Comparando produtos compatíveis...';
-
-  const analise =
-    analisarTermos(
-      interpretacao,
-      q
+  const consulta =
+    montarConsulta(
+      q,
+      interpretacao
     );
 
-  let scored = catalog
+  let encontrados = catalog
     .map(p => ({
       p,
-      s: score(p, analise)
+      s: calcularScore(
+        p,
+        consulta
+      )
     }))
-    .filter(x => x.s !== null)
-    .sort((a, b) => b.s - a.s);
-
-  // SEGUNDA TRAVA DE ORÇAMENTO
-  // Mesmo que algo falhe anteriormente,
-  // nenhum item acima do limite chega à tela.
-  if (analise.max !== null) {
-    scored = scored.filter(
-      x => num(x.p.price) <= analise.max
+    .filter(
+      item => item.s !== null
+    )
+    .sort(
+      (a, b) => b.s - a.s
     );
+
+  /*
+    Segunda trava de orçamento.
+  */
+  if (consulta.max !== null) {
+    encontrados =
+      encontrados.filter(
+        item =>
+          num(item.p.price) <=
+          consulta.max
+      );
   }
 
-  if (!scored.length) {
+  if (!encontrados.length) {
     statusEl.textContent =
-      analise.max !== null
-        ? `Não encontrei uma opção realmente compatível até ${money(analise.max)}.`
-        : 'Não encontrei uma opção realmente compatível com essa busca.';
+      consulta.max !== null
+        ? `Não encontrei produtos compatíveis até ${money(consulta.max)}.`
+        : 'Não encontrei produtos compatíveis com essa busca.';
 
-    cards.innerHTML = '';
     return;
   }
 
-  const melhorPontuacao =
-    scored[0].s;
+  /*
+    Os três principais precisam estar próximos
+    da relevância do melhor resultado.
 
-  let candidatos =
-    scored.filter(
-      x =>
-        x.s >=
-        melhorPontuacao * 0.85
+    "Ver todas" continua contendo os demais.
+  */
+  const melhorScore =
+    encontrados[0].s;
+
+  const principaisFortes =
+    encontrados.filter(
+      item =>
+        item.s >=
+        melhorScore * 0.70
     );
 
-  
+  let principais;
 
-  const best =
-    candidatos[0];
-
-  const cheap =
-    [...candidatos].sort(
-      (a, b) =>
-        num(a.p.price) -
-        num(b.p.price)
-    )[0];
-
-  const value =
-    [...candidatos].sort(
-      (a, b) => {
-        const qa =
-          a.s +
-          num(a.p.rating) * 5 +
-          num(a.p.discount) / 5;
-
-        const qb =
-          b.s +
-          num(b.p.rating) * 5 +
-          num(b.p.discount) / 5;
-
-        return qb - qa;
-      }
-    )[0];
-
-  const picks = [];
-
-  function adicionar(
-    item,
-    label
-  ) {
-    if (
-      item &&
-      item.p &&
-      !picks.some(
-        x => x.p.id === item.p.id
-      )
-    ) {
-      picks.push({
-        p: item.p,
-        label
-      });
-    }
-  }
-
-  adicionar(
-    best,
-    'Melhor correspondência'
-  );
-
-  adicionar(
-    cheap,
-    'Menor preço'
-  );
-
-  adicionar(
-    value,
-    'Custo-benefício'
-  );
-
-  for (const item of candidatos) {
-    if (picks.length >= 3) break;
-
-    adicionar(
-      item,
-      'Outra opção'
-    );
-  }
-
- statusEl.textContent =
-  candidatos.length === 1
-    ? `ACHEI! Esta foi a melhor opção encontrada${
-        analise.max !== null
-          ? ` até ${money(analise.max)}`
-          : ''
-      }.`
-    : `ACHEI ${candidatos.length} opções realmente compatíveis${
-        analise.max !== null
-          ? ` até ${money(analise.max)}`
-          : ''
-      }. Estas são as melhores encontradas.`;
-
-  cards.innerHTML =
-    picks
-      .slice(0, 3)
-      .map(x =>
-        render(
-          x.p,
-          x.label
+  if (principaisFortes.length >= 3) {
+    principais =
+      principaisFortes.slice(0, 3);
+  } else {
+    principais =
+      encontrados.slice(
+        0,
+        Math.min(
+          3,
+          encontrados.length
         )
+      );
+  }
+
+  /*
+    Mantemos todos os encontrados para o botão
+    "Ver todas as opções", mas colocamos os três
+    escolhidos primeiro.
+  */
+  const idsPrincipais =
+    new Set(
+      principais.map(
+        x => x.p.id
       )
-      .join('');
+    );
+
+  todosResultados = [
+    ...principais,
+    ...encontrados.filter(
+      x =>
+        !idsPrincipais.has(
+          x.p.id
+        )
+    )
+  ];
+
+  const quantidadePrincipal =
+    Math.min(
+      3,
+      todosResultados.length
+    );
+
+  statusEl.textContent =
+    quantidadePrincipal === 1
+      ? `ACHEI! Esta foi a opção mais relevante${
+          consulta.max !== null
+            ? ` até ${money(consulta.max)}`
+            : ''
+        }.`
+      : `ACHEI! Estas são as ${quantidadePrincipal} opções mais relevantes${
+          consulta.max !== null
+            ? ` até ${money(consulta.max)}`
+            : ''
+        }.`;
+
+  renderPrincipais(
+    todosResultados
+  );
 
   results.scrollIntoView({
     behavior: 'smooth',
@@ -607,6 +612,7 @@ form.addEventListener(
   'submit',
   e => {
     e.preventDefault();
+
     search(
       input.value.trim()
     );
