@@ -500,13 +500,7 @@ async function search(q) {
         melhorPontuacao * 0.72
     );
 
-  if (candidatos.length < 3) {
-    candidatos =
-      scored.slice(
-        0,
-        Math.min(20, scored.length)
-      );
-  }
+  
 
   const best =
     candidatos[0];
