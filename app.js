@@ -10,7 +10,7 @@ const FUNCTION_URL =
 let catalog = [];
 
 function norm(s = '') {
-  return s
+  return String(s)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
@@ -24,7 +24,7 @@ function money(v) {
 }
 
 function saf(v) {
-  return Number.isFinite(v) ? v : 0;
+  return Number.isFinite(Number(v)) ? Number(v) : 0;
 }
 
 function termosLocais(q) {
@@ -83,20 +83,19 @@ function analisarTermos(dados, buscaOriginal) {
     termos = termosLocais(buscaOriginal);
   }
 
-  const obrigatorios =
-    dados && Array.isArray(dados.termos_obrigatorios)
-      ? dados.termos_obrigatorios.map(norm)
-      : [];
-
-  const evitar =
-    dados && Array.isArray(dados.termos_evitar)
-      ? dados.termos_evitar.map(norm)
-      : [];
-
   return {
     termos: [...new Set(termos)],
-    obrigatorios: [...new Set(obrigatorios)],
-    evitar: [...new Set(evitar)],
+
+    obrigatorios:
+      dados && Array.isArray(dados.termos_obrigatorios)
+        ? [...new Set(dados.termos_obrigatorios.map(norm))]
+        : [],
+
+    evitar:
+      dados && Array.isArray(dados.termos_evitar)
+        ? [...new Set(dados.termos_evitar.map(norm))]
+        : [],
+
     max:
       dados && Number.isFinite(dados.orcamento_maximo)
         ? dados.orcamento_maximo
@@ -105,7 +104,9 @@ function analisarTermos(dados, buscaOriginal) {
 }
 
 function score(p, analise) {
-  if (analise.max && p.price > analise.max) {
+  const price = saf(p.price);
+
+  if (analise.max !== null && price > analise.max) {
     return null;
   }
 
@@ -117,31 +118,26 @@ function score(p, analise) {
 
   const full = `${title} ${category} ${description}`;
 
-  // ELIMINA produtos incompatíveis.
-  for (const termo of analise.evitar) {
-    if (termo && title.includes(termo)) {
-      return null;
-    }
+  // 1. REJEIÇÃO
+  // Se o contexto do produto contiver algo que a busca
+  // explicitamente mandou evitar, o produto sai da seleção.
+  const proibido = analise.evitar.some(
+    termo => termo && full.includes(termo)
+  );
+
+  if (proibido) {
+    return null;
   }
 
-  // Se houver conceitos obrigatórios,
-  // o produto precisa combinar com pelo menos um.
-  if (analise.obrigatorios.length) {
-    const compativel = analise.obrigatorios.some(
-      termo => full.includes(termo)
-    );
-
-    if (!compativel) {
-      return null;
-    }
-  }
-
+  // 2. RELEVÂNCIA DOS TERMOS DE BUSCA
   let pontos = 0;
   let encontrados = 0;
 
   for (const termo of analise.termos) {
+    if (!termo) continue;
+
     if (title.includes(termo)) {
-      pontos += 12;
+      pontos += 14;
       encontrados++;
     } else if (category.includes(termo)) {
       pontos += 7;
@@ -156,70 +152,114 @@ function score(p, analise) {
     return null;
   }
 
-  const cobertura =
-    encontrados / Math.max(analise.termos.length, 1);
+  // 3. CONCEITOS DE FINALIDADE
+  // Um produto não basta ter "pet" ou "pelo".
+  // Ele precisa apresentar algum conceito desejado.
+  let conceitosEncontrados = 0;
 
-  pontos += cobertura * 25;
-
-  if (cobertura >= 0.5) {
-    pontos += 12;
-  }
-
-  // Dá preferência forte para os conceitos desejados.
   for (const termo of analise.obrigatorios) {
+    if (!termo) continue;
+
     if (title.includes(termo)) {
-      pontos += 20;
+      pontos += 28;
+      conceitosEncontrados++;
     } else if (full.includes(termo)) {
-      pontos += 8;
+      pontos += 10;
+      conceitosEncontrados++;
     }
   }
 
-  pontos +=
-    Math.min(saf(p.rating), 5) * 1.4 +
-    Math.min(saf(p.discount), 80) / 40;
+  if (
+    analise.obrigatorios.length &&
+    conceitosEncontrados === 0
+  ) {
+    return null;
+  }
 
-  const pares = [
-    ['removedor', 'pelo'],
+  // 4. COMBINAÇÕES DE ALTA INTENÇÃO
+  const combinacoes = [
     ['tira', 'pelo'],
-    ['escova', 'pelo'],
-    ['rolo', 'pelo'],
+    ['removedor', 'pelo'],
     ['removedor', 'fiapo'],
+    ['rolo', 'pelo'],
+    ['rolinho', 'pelo'],
+    ['escova', 'removedor'],
+    ['escova', 'tira'],
+    ['sofa', 'pelo'],
+    ['roupa', 'pelo'],
+    ['tecido', 'pelo'],
+    ['estofado', 'pelo'],
     ['caixa', 'organiz'],
     ['espremedor', 'eletrico'],
     ['fone', 'bluetooth']
   ];
 
-  for (const [a, b] of pares) {
+  let combinacaoForte = false;
+
+  for (const [a, b] of combinacoes) {
     if (full.includes(a) && full.includes(b)) {
-      pontos += 22;
+      pontos += 35;
+      combinacaoForte = true;
     }
   }
 
-  // Para buscas de remoção de pelos/fiapos,
-  // dá preferência a produtos para superfícies.
-  if (
+  // 5. CONTEXTO DE SUPERFÍCIE
+  const contextoSuperficie = [
+    'sofa',
+    'estofado',
+    'roupa',
+    'roupas',
+    'tecido',
+    'tapete',
+    'moveis',
+    'cama',
+    'carro'
+  ];
+
+  let superficieEncontrada = false;
+
+  for (const termo of contextoSuperficie) {
+    if (full.includes(termo)) {
+      pontos += 12;
+      superficieEncontrada = true;
+    }
+  }
+
+  // Para uma busca claramente relacionada a pelos/fiapos,
+  // valorizamos muito produto de remoção em superfícies.
+  const buscaDeRemocao =
     analise.termos.some(t =>
-      ['sofa', 'estofado', 'fiapo', 'pelos'].includes(t)
-    )
-  ) {
-    const superficie = [
-      'sofa',
-      'estofado',
-      'roupa',
-      'tecido',
-      'tapete',
-      'moveis',
-      'removedor',
-      'rolo',
-      'escova'
-    ];
+      ['removedor', 'pelos', 'pelo', 'fiapos', 'fiapo', 'sofa'].includes(t)
+    );
 
-    for (const termo of superficie) {
-      if (full.includes(termo)) {
-        pontos += 5;
-      }
-    }
+  if (
+    buscaDeRemocao &&
+    !superficieEncontrada &&
+    !combinacaoForte
+  ) {
+    pontos -= 25;
   }
+
+  // 6. COBERTURA
+  const cobertura =
+    encontrados / Math.max(analise.termos.length, 1);
+
+  pontos += cobertura * 20;
+
+  // Não queremos resultados fracos apenas porque têm uma
+  // palavra genérica como "escova".
+  if (
+    buscaDeRemocao &&
+    pontos < 45
+  ) {
+    return null;
+  }
+
+  // 7. QUALIDADE COMERCIAL
+  // Só entra depois da relevância.
+  pontos +=
+    Math.min(saf(p.rating), 5) * 1.2 +
+    Math.min(saf(p.discount), 80) / 50;
 
   return pontos;
 }
@@ -239,22 +279,22 @@ function render(p, label) {
         <h4>${p.title}</h4>
 
         <div class="meta">
-          ⭐ ${p.rating ? p.rating.toFixed(1) : '—'}
+          ⭐ ${saf(p.rating) ? saf(p.rating).toFixed(1) : '—'}
           ·
           ${
-            p.discount
-              ? `${Math.round(p.discount)}% OFF`
+            saf(p.discount)
+              ? `${Math.round(saf(p.discount))}% OFF`
               : 'Oferta do catálogo'
           }
         </div>
 
         <div class="price">
-          ${money(p.price)}
+          ${money(saf(p.price))}
         </div>
 
         ${
-          p.regular > p.price
-            ? `<div class="old">de ${money(p.regular)}</div>`
+          saf(p.regular) > saf(p.price)
+            ? `<div class="old">de ${money(saf(p.regular))}</div>`
             : ''
         }
 
@@ -288,14 +328,14 @@ async function search(q) {
   const interpretacao = await interpretarBusca(q);
 
   statusEl.textContent =
-    '⚡ Procurando as melhores opções...';
+    '⚡ Comparando produtos compatíveis...';
 
   const analise = analisarTermos(
     interpretacao,
     q
   );
 
-  let scored = catalog
+  const scored = catalog
     .map(p => ({
       p,
       s: score(p, analise)
@@ -305,71 +345,82 @@ async function search(q) {
 
   if (!scored.length) {
     statusEl.textContent =
-      'Não encontrei uma opção realmente compatível com essa busca neste catálogo. Tente outras palavras ou outro orçamento.';
+      'Não encontrei uma opção realmente compatível com essa busca neste catálogo.';
     cards.innerHTML = '';
     return;
   }
 
+  // Apenas candidatos próximos da melhor correspondência
+  // podem disputar preço e custo-benefício.
   const melhorPontuacao = scored[0].s;
 
-  const fortes = scored.filter(
-    x => x.s >= melhorPontuacao - 18
+  let candidatos = scored.filter(
+    x => x.s >= melhorPontuacao * 0.72
   );
 
-  const ranked = (
-    fortes.length >= 3 ? fortes : scored
-  )
-    .slice(0, 60)
-    .map(x => x.p);
+  if (candidatos.length < 3) {
+    candidatos = scored.slice(
+      0,
+      Math.min(20, scored.length)
+    );
+  }
 
-  const best = ranked[0];
+  const best = candidatos[0];
 
-  const cheap = [...ranked].sort(
-    (a, b) => a.price - b.price
+  const cheap = [...candidatos].sort(
+    (a, b) => saf(a.p.price) - saf(b.p.price)
   )[0];
 
-  const value = [...ranked].sort(
-    (a, b) =>
-      (saf(b.rating) * 2 + saf(b.discount) / 25) -
-      (saf(a.rating) * 2 + saf(a.discount) / 25)
-  )[0];
+  const value = [...candidatos].sort((a, b) => {
+    const qualidadeA =
+      a.s +
+      saf(a.p.rating) * 5 +
+      saf(a.p.discount) / 5;
+
+    const qualidadeB =
+      b.s +
+      saf(b.p.rating) * 5 +
+      saf(b.p.discount) / 5;
+
+    return qualidadeB - qualidadeA;
+  })[0];
 
   const picks = [];
 
-  for (const item of [
-    [best, 'Melhor correspondência'],
-    [cheap, 'Menor preço'],
-    [value, 'Custo-benefício']
-  ]) {
+  function adicionar(item, label) {
     if (
-      item[0] &&
-      !picks.some(x => x[0].id === item[0].id)
+      item &&
+      item.p &&
+      !picks.some(x => x.p.id === item.p.id)
     ) {
-      picks.push(item);
+      picks.push({
+        p: item.p,
+        label
+      });
     }
   }
 
-  for (const p of ranked) {
-    if (
-      picks.length < 3 &&
-      !picks.some(x => x[0].id === p.id)
-    ) {
-      picks.push([p, 'Outra opção']);
-    }
+  adicionar(best, 'Melhor correspondência');
+  adicionar(cheap, 'Menor preço');
+  adicionar(value, 'Custo-benefício');
+
+  for (const item of candidatos) {
+    if (picks.length >= 3) break;
+    adicionar(item, 'Outra opção');
   }
 
   statusEl.textContent =
-    `ACHEI ${scored.length} opções compatíveis` +
+    `ACHEI ${scored.length} opções realmente compatíveis` +
     (
-      analise.max
+      analise.max !== null
         ? ` até ${money(analise.max)}`
         : ''
     ) +
-    '. Estas são as 3 mais relevantes.';
+    '. Estas são as melhores encontradas.';
 
   cards.innerHTML = picks
     .slice(0, 3)
-    .map(x => render(...x))
+    .map(x => render(x.p, x.label))
     .join('');
 
   results.scrollIntoView({
