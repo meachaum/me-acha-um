@@ -497,7 +497,7 @@ async function search(q) {
     scored.filter(
       x =>
         x.s >=
-        melhorPontuacao * 0.72
+        melhorPontuacao * 0.85
     );
 
   
@@ -573,14 +573,18 @@ async function search(q) {
     );
   }
 
-  statusEl.textContent =
-    `ACHEI ${scored.length} opções compatíveis` +
-    (
-      analise.max !== null
-        ? ` até ${money(analise.max)}`
-        : ''
-    ) +
-    '. Estas são as melhores encontradas.';
+ statusEl.textContent =
+  candidatos.length === 1
+    ? `ACHEI! Esta foi a melhor opção encontrada${
+        analise.max !== null
+          ? ` até ${money(analise.max)}`
+          : ''
+      }.`
+    : `ACHEI ${candidatos.length} opções realmente compatíveis${
+        analise.max !== null
+          ? ` até ${money(analise.max)}`
+          : ''
+      }. Estas são as melhores encontradas.`;
 
   cards.innerHTML =
     picks
