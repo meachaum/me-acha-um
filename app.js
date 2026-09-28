@@ -59,6 +59,8 @@ async function interpretarBusca(busca) {
       ok: false,
       busca_original: busca,
       termos_busca: [busca],
+      termos_obrigatorios: [],
+      termos_evitar: [],
       orcamento_maximo: null
     };
   }
@@ -81,8 +83,20 @@ function analisarTermos(dados, buscaOriginal) {
     termos = termosLocais(buscaOriginal);
   }
 
+  const obrigatorios =
+    dados && Array.isArray(dados.termos_obrigatorios)
+      ? dados.termos_obrigatorios.map(norm)
+      : [];
+
+  const evitar =
+    dados && Array.isArray(dados.termos_evitar)
+      ? dados.termos_evitar.map(norm)
+      : [];
+
   return {
     termos: [...new Set(termos)],
+    obrigatorios: [...new Set(obrigatorios)],
+    evitar: [...new Set(evitar)],
     max:
       dados && Number.isFinite(dados.orcamento_maximo)
         ? dados.orcamento_maximo
@@ -100,7 +114,27 @@ function score(p, analise) {
     `${p.category || ''} ${p.subcategory || ''}`
   );
   const description = norm(p.description || '');
+
   const full = `${title} ${category} ${description}`;
+
+  // ELIMINA produtos incompatíveis.
+  for (const termo of analise.evitar) {
+    if (termo && title.includes(termo)) {
+      return null;
+    }
+  }
+
+  // Se houver conceitos obrigatórios,
+  // o produto precisa combinar com pelo menos um.
+  if (analise.obrigatorios.length) {
+    const compativel = analise.obrigatorios.some(
+      termo => full.includes(termo)
+    );
+
+    if (!compativel) {
+      return null;
+    }
+  }
 
   let pontos = 0;
   let encontrados = 0;
@@ -131,15 +165,25 @@ function score(p, analise) {
     pontos += 12;
   }
 
+  // Dá preferência forte para os conceitos desejados.
+  for (const termo of analise.obrigatorios) {
+    if (title.includes(termo)) {
+      pontos += 20;
+    } else if (full.includes(termo)) {
+      pontos += 8;
+    }
+  }
+
   pontos +=
     Math.min(saf(p.rating), 5) * 1.4 +
     Math.min(saf(p.discount), 80) / 40;
 
-  // Bônus quando aparecem conceitos importantes juntos.
   const pares = [
     ['removedor', 'pelo'],
+    ['tira', 'pelo'],
     ['escova', 'pelo'],
     ['rolo', 'pelo'],
+    ['removedor', 'fiapo'],
     ['caixa', 'organiz'],
     ['espremedor', 'eletrico'],
     ['fone', 'bluetooth']
@@ -147,7 +191,33 @@ function score(p, analise) {
 
   for (const [a, b] of pares) {
     if (full.includes(a) && full.includes(b)) {
-      pontos += 18;
+      pontos += 22;
+    }
+  }
+
+  // Para buscas de remoção de pelos/fiapos,
+  // dá preferência a produtos para superfícies.
+  if (
+    analise.termos.some(t =>
+      ['sofa', 'estofado', 'fiapo', 'pelos'].includes(t)
+    )
+  ) {
+    const superficie = [
+      'sofa',
+      'estofado',
+      'roupa',
+      'tecido',
+      'tapete',
+      'moveis',
+      'removedor',
+      'rolo',
+      'escova'
+    ];
+
+    for (const termo of superficie) {
+      if (full.includes(termo)) {
+        pontos += 5;
+      }
     }
   }
 
@@ -260,8 +330,8 @@ async function search(q) {
 
   const value = [...ranked].sort(
     (a, b) =>
-      (b.rating * 2 + b.discount / 25) -
-      (a.rating * 2 + a.discount / 25)
+      (saf(b.rating) * 2 + saf(b.discount) / 25) -
+      (saf(a.rating) * 2 + saf(a.discount) / 25)
   )[0];
 
   const picks = [];
