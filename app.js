@@ -573,32 +573,82 @@ async function search(q) {
 
     "Ver todas" continua contendo os demais.
   */
-  const melhorScore =
-    encontrados[0].s;
+  /*
+  SELEÇÃO DOS 3 PRINCIPAIS
 
-  const principaisFortes =
-    encontrados.filter(
-      item =>
-        item.s >=
-        melhorScore * 0.70
-    );
+  Primeiro tentamos encontrar produtos em que
+  aquilo que o cliente pesquisou aparece como
+  parte principal do título.
+*/
+const termosProduto = consulta.termosOriginais;
 
-  let principais;
+const principaisDiretos = encontrados.filter(item => {
+  const titulo = norm(item.p.title || '');
 
-  if (principaisFortes.length >= 3) {
-    principais =
-      principaisFortes.slice(0, 3);
-  } else {
-    principais =
-      encontrados.slice(
-        0,
-        Math.min(
-          3,
-          encontrados.length
-        )
-      );
+  if (!termosProduto.length) {
+    return false;
   }
 
+  /*
+    Todas as palavras importantes pesquisadas
+    precisam aparecer no título.
+  */
+  const todosNoTitulo = termosProduto.every(
+    termo => titulo.includes(termo)
+  );
+
+  if (!todosNoTitulo) {
+    return false;
+  }
+
+  /*
+    Quanto mais cedo o termo pesquisado aparece
+    no título, maior a chance de ser o produto
+    principal e não apenas algo relacionado.
+  */
+  const primeiraPosicao = Math.min(
+    ...termosProduto.map(
+      termo => titulo.indexOf(termo)
+    )
+  );
+
+  item.posicaoProduto = primeiraPosicao;
+
+  return true;
+});
+
+/*
+  Dentro dos produtos diretamente compatíveis,
+  priorizamos quem menciona o produto mais cedo
+  no título. O score continua servindo de desempate.
+*/
+principaisDiretos.sort((a, b) => {
+  if (a.posicaoProduto !== b.posicaoProduto) {
+    return a.posicaoProduto - b.posicaoProduto;
+  }
+
+  return b.s - a.s;
+});
+
+let principais;
+
+/*
+  Se encontramos produtos diretos, usamos eles.
+  Não colocamos acessórios só para completar 3.
+*/
+if (principaisDiretos.length) {
+  principais = principaisDiretos.slice(0, 3);
+} else {
+  /*
+    Para buscas mais descritivas, em que o nome
+    exato do produto não foi digitado, usamos
+    normalmente a relevância calculada.
+  */
+  principais = encontrados.slice(
+    0,
+    Math.min(3, encontrados.length)
+  );
+}
   /*
     Mantemos todos os encontrados para o botão
     "Ver todas as opções", mas colocamos os três
